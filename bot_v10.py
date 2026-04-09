@@ -461,7 +461,7 @@ def is_delta_strongly_against(df, signal, lookback=10):
         return False
 
     against = (signal == "LONG" and current_delta < 0) or (signal == "SHORT" and current_delta > 0)
-    strong = abs(current_delta) > median_delta * 1.5
+    strong = abs(current_delta) > median_delta * 2.5  # V10.2: было 1.5 — слишком агрессивно
 
     return against and strong
 
@@ -674,19 +674,13 @@ def scan():
                 delta_ok = (signal == "LONG" and delta > 0) or (signal == "SHORT" and delta < 0)
                 delta_note = f"{'✅' if delta_ok else '➖'} {'+' if delta >= 0 else ''}{delta:.1f}"
 
-                # ===== БЛОКИРОВКА: стакан + дельта оба против сигнала =====
+                # ===== СТАКАН + ДЕЛЬТА ПРОТИВ (штрафы вместо блокировки — V10.2) =====
                 ob_against = (signal == "LONG" and ob_signal == "SELL") or (signal == "SHORT" and ob_signal == "BUY")
                 delta_against = not delta_ok
-                if ob_against and delta_against:
-                    log.info(f"⛔ {symbol}: стакан + дельта против {signal} — блокировка")
-                    continue
+                ob_delta_both_against = ob_against and delta_against
 
-                # ===== БЛОКИРОВКА: сильная дельта против (V10.1) =====
-                if is_delta_strongly_against(df1, signal):
-                    log.info(f"⛔ {symbol}: дельта сильно против {signal} — блокировка")
-                    continue
-
-
+                # ===== СИЛЬНАЯ ДЕЛЬТА ПРОТИВ (штраф вместо блокировки — V10.2) =====
+                delta_strongly_against = is_delta_strongly_against(df1, signal)
 
                 # ===== РАСШИРЕННЫЕ ФИЛЬТРЫ =====
                 structure = market_structure_ok(df1, signal)
@@ -718,8 +712,19 @@ def scan():
                 if delta_against:
                     score -= 1  # дельта против
                 if not structure:
-                    score -= 2  # структура не подтверждена (V10.1: было -1)
-                # ...без антиманипуляционных штрафов...
+                    score -= 1  # структура не подтверждена (V10.2: было -2, слишком жёстко)
+
+                # Штрафы V10.2 (раньше были жёсткие блокировки)
+                if ob_delta_both_against:
+                    score -= 1  # стакан + дельта оба против
+                if delta_strongly_against:
+                    score -= 1  # сильная дельта против
+
+                # Антиманипуляция (V10.2: штраф вместо блокировки)
+                wick_manip, wick_count = detect_wick_manipulation(df1)
+                if wick_manip:
+                    score -= 1  # манипулятивные свечи
+
                 score = max(0, score)
 
                 score_bar = "⭐" * score + "☆" * (10 - score)
@@ -752,6 +757,7 @@ def scan():
                 ha_note = "✅ Обнаружено" if hidden_accum else "➖"
                 sh_note = "✅ Обнаружен" if stop_hunt else "➖"
                 rt_note = "✅ Подтверждён" if retest else "➖"
+                wm_note = f"⚠️ {wick_count} манип. свечей" if wick_manip else "✅ Чисто"
 
                 # ===== RECORD + DB + SEND =====
                 signal_filter.record_signal(exchange=name, symbol=symbol)
@@ -801,6 +807,7 @@ Funding: {funding_note}
 Ретест: {rt_note}
 Сжатие ATR: {rc_note}
 Накопление: {ha_note}
+Антиманипуляция: {wm_note}
 
 🏆 *Score: {score}/10*
 {score_bar}
